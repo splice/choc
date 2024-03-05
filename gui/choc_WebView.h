@@ -116,6 +116,10 @@ public:
         /// and the view will navigate to that address when launched.
         /// Leave blank for a default.
         std::string customSchemeURI;
+
+        /// Optional domain to use for fetching local resources which can be used to
+        /// override the default. Leave this empty for default behaviour.
+        std::string customResourceDomain;
     };
 
     /// Creates a WebView with default options
@@ -493,7 +497,11 @@ struct choc::ui::WebView::Pimpl
         call<void> (config, "release");
 
         if (options->fetchResource)
-            navigate ({});
+        {
+            const auto resourceDomain = options->customResourceDomain.empty() ? "choc.choc" : options->customResourceDomain;
+            const auto navigationUrl = getURIScheme (*options) + "://" + resourceDomain + '/';
+            navigate (navigationUrl);
+        }
 
         CHOC_AUTORELEASE_END
     }
