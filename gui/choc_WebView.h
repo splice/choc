@@ -82,8 +82,8 @@ public:
         // this empty for default behaviour.
         std::string customUserAgent;
 
-        /// Optional application URI scheme which can be used to override the default.
-        // Leave this empty for default behaviour.
+        /// [Mac only] Optional application URI scheme which can be used to override
+        // the default. Leave this empty for default behaviour.
         std::string customUriScheme;
 
         /// Optional domain to use for fetching local resources which can be used to
@@ -1032,6 +1032,9 @@ struct WebView::Pimpl
     Pimpl (WebView& v, const Options& options)
         : owner (v), fetchResource (options.fetchResource), customUserAgent (options.customUserAgent)
     {
+        if (!options.customResourceDomain.empty())
+            resourceRequestFilterUriPrefix = "https://" + options.customResourceDomain + "/";
+
         // You cam define this macro to provide a custom way of getting a
         // choc::file::DynamicLibrary that contains the redistributable
         // Microsoft WebView2Loader.dll
@@ -1106,7 +1109,7 @@ struct WebView::Pimpl
 private:
     WindowClass windowClass { L"CHOCWebView", (WNDPROC) wndProc };
     HWNDHolder hwnd;
-    const std::string resourceRequestFilterUriPrefix = "https://choc.localhost/";
+    std::string resourceRequestFilterUriPrefix = "https://choc.localhost/";
 
     static Pimpl* getPimpl (HWND h)     { return (Pimpl*) GetWindowLongPtr (h, GWLP_USERDATA); }
 
