@@ -82,6 +82,14 @@ public:
         // this empty for default behaviour.
         std::string customUserAgent;
 
+        /// [Mac only] Optional application URI scheme which can be used to override
+        // the default. Leave this empty for default behaviour.
+        std::string customUriScheme;
+
+        /// Optional domain to use for fetching local resources which can be used to
+        // override the default. Leave this empty for default behaviour.
+        std::string customResourceDomain;
+
         /// Serve resources to the browser from a C++ callback function.
         /// This can effectively be used to implement a basic web server,
         /// serving resources to the browser in any way the client code chooses.
@@ -351,8 +359,9 @@ struct choc::ui::WebView::Pimpl
         call<void> (manager, "retain");
         call<void> (manager, "addScriptMessageHandler:name:", delegate, getNSString ("external"));
 
+        const auto uriScheme = options.customUriScheme.empty() ? "choc" : options.customUriScheme;
         if (options.fetchResource)
-            call<void> (config, "setURLSchemeHandler:forURLScheme:", delegate, getNSString ("choc"));
+            call<void> (config, "setURLSchemeHandler:forURLScheme:", delegate, getNSString (uriScheme));
 
         webview = call<id> (allocateWebview(), "initWithFrame:configuration:", CGRect(), config);
         objc_setAssociatedObject (webview, "choc_webview", (id) this, OBJC_ASSOCIATION_ASSIGN);
@@ -366,7 +375,11 @@ struct choc::ui::WebView::Pimpl
         call<void> (config, "release");
 
         if (options.fetchResource)
-            navigate ("choc://choc.choc/");
+        {
+            const auto resourceDomain = options.customResourceDomain.empty() ? "choc.choc" : options.customResourceDomain;
+            const auto navigationUrl = uriScheme + "://" + resourceDomain + '/';
+            navigate (navigationUrl);
+        }
     }
 
     ~Pimpl()
@@ -1019,6 +1032,9 @@ struct WebView::Pimpl
     Pimpl (WebView& v, const Options& options)
         : owner (v), fetchResource (options.fetchResource), customUserAgent (options.customUserAgent)
     {
+        if (!options.customResourceDomain.empty())
+            resourceRequestFilterUriPrefix = "https://" + options.customResourceDomain + "/";
+
         // You cam define this macro to provide a custom way of getting a
         // choc::file::DynamicLibrary that contains the redistributable
         // Microsoft WebView2Loader.dll
@@ -1093,7 +1109,7 @@ struct WebView::Pimpl
 private:
     WindowClass windowClass { L"CHOCWebView", (WNDPROC) wndProc };
     HWNDHolder hwnd;
-    const std::string resourceRequestFilterUriPrefix = "https://choc.localhost/";
+    std::string resourceRequestFilterUriPrefix = "https://choc.localhost/";
 
     static Pimpl* getPimpl (HWND h)     { return (Pimpl*) GetWindowLongPtr (h, GWLP_USERDATA); }
 
