@@ -142,6 +142,10 @@ public:
     /// Removes a previously-bound function.
     void unbind (const std::string& functionName);
 
+    using AsyncReplyFn = std::function<void(choc::value::Value result, const std::string& errorMessage)>;
+    using AsyncCallbackFn = std::function<void(const choc::value::ValueView& args, AsyncReplyFn&& replyFn)>;
+    void bindAsync(const std::string& functionName, AsyncCallbackFn&& fn);
+
     /// Adds a script to run when the browser loads a page
     void addInitScript (const std::string& script);
 
@@ -155,6 +159,9 @@ private:
 
     std::unordered_map<std::string, CallbackFn> bindings;
     void invokeBinding (const std::string&);
+
+    std::unordered_map<std::string, AsyncCallbackFn> asyncBindings;
+    void invokeBindingAsync (const std::string&, AsyncReplyFn&&);
 };
 
 } // namespace choc::ui
@@ -603,13 +610,17 @@ private:
             using namespace choc::objc;
             delegateClass = createDelegateClass ("NSObject", "CHOCWebViewDelegate_");
 
-            class_addMethod (delegateClass, sel_registerName ("userContentController:didReceiveScriptMessage:"),
-                             (IMP) (+[](id self, SEL, id, id msg)
+            class_addMethod (delegateClass, sel_registerName ("userContentController:didReceiveScriptMessage:replyHandler:"),
+                             (IMP) (+[](id self, SEL, id, id msg, void (^replyHandler)(id reply, id errorMessage))
                              {
                                  if (auto p = getPimpl (self))
-                                     p->owner.invokeBinding (objc::getString (call<id> (msg, "body")));
+                                 {
+                                     p->owner.invokeBindingAsync (objc::getString (call<id> (msg, "body")), [=](choc::value::Value result, std::string errorMessage) {
+                                         replyHandler(objc::getNSString(result.toString()), objc::getNSString(errorMessage));
+                                     });
+                                 }
                              }),
-                             "v@:@@");
+                             "v@:@@@");
 
             class_addMethod (delegateClass, sel_registerName ("webView:startURLSchemeTask:"),
                              (IMP) (+[](id self, SEL, id, id task)
@@ -1511,6 +1522,40 @@ inline void WebView::invokeBinding (const std::string& msg)
     {}
 }
 
+inline void WebView::bindAsync (const std::string& functionName, AsyncCallbackFn&& fn)
+{
+    std::string script = R"((function() {
+      window["FUNCTION_NAME"] = function() {
+        return INVOKE_BINDING(JSON.stringify({
+          fn: "FUNCTION_NAME",
+          params: Array.prototype.slice.call(arguments),
+        },
+        (key, value) => typeof value === 'bigint' ? value.toString() : value));
+      }
+    })())";
+
+    script = choc::text::replace (script, "FUNCTION_NAME", functionName,
+                                          "INVOKE_BINDING", Pimpl::postMessageFn);
+    addInitScript (script);
+    evaluateJavascript (script);
+    asyncBindings[functionName] = std::move (fn);
+}
+
+inline void WebView::invokeBindingAsync (const std::string& msg, AsyncReplyFn&& replyFn)
+{
+    try
+    {
+        auto json = choc::json::parse (msg);
+        auto b = asyncBindings.find (std::string (json["fn"].getString()));
+
+        if (b == asyncBindings.end())
+            return replyFn({}, "Failed to find a binding by that name");
+
+        b->second (json["params"], std::move(replyFn));
+    }
+    catch (const std::exception&)
+    {}
+}
 } // namespace choc::ui
 
 
