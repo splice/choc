@@ -20,6 +20,7 @@
 #define CHOC_WEBVIEW_HEADER_INCLUDED
 
 #include <optional>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 #include <functional>
@@ -162,6 +163,9 @@ private:
 
     std::unordered_map<std::string, AsyncCallbackFn> asyncBindings;
     void invokeBindingAsync (const std::string&, AsyncReplyFn&&);
+
+    bool hasBinding (const std::string&) const;
+    bool hasAsyncBinding (const std::string&) const;
 };
 
 } // namespace choc::ui
@@ -1369,9 +1373,27 @@ private:
 
             LPWSTR message = {};
             args->TryGetWebMessageAsString (std::addressof (message));
-            ownerPimpl.owner.invokeBinding (createUTF8FromUTF16 (message));
-            sender->PostWebMessageAsString (message);
-            CoTaskMemFree (message);
+
+            auto messageUtf8 = createUTF8FromUTF16 (message);
+            if (ownerPimpl.owner.hasBinding (messageUtf8) > 0) {
+                ownerPimpl.owner.invokeBinding (messageUtf8);
+                sender->PostWebMessageAsString (message);
+                CoTaskMemFree (message);
+            } else if (ownerPimpl.owner.hasAsyncBinding (messageUtf8) > 0) {
+                 std::thread([=] {
+                    ownerPimpl.owner.invokeBindingAsync (createUTF8FromUTF16 (message),
+                        [=](choc::value::Value result, std::string errorMessage) {
+                            if (!errorMessage.empty()) {
+                                sender->PostWebMessageAsString (createUTF16StringFromUTF8 (errorMessage).c_str());
+                                return;
+                            }
+                            sender->PostWebMessageAsString (createUTF16StringFromUTF8 (result.toString()).c_str());
+                        }
+                    );
+                    CoTaskMemFree (message);
+                }).detach(); // TODO: detaching is unsafe here. Do we need to keep track of threads so we can join() this on destruction?
+            }
+
             return S_OK;
         }
 
@@ -1556,6 +1578,31 @@ inline void WebView::invokeBindingAsync (const std::string& msg, AsyncReplyFn&& 
     catch (const std::exception&)
     {}
 }
+
+inline bool WebView::hasBinding(const std::string& msg) const
+{
+    try
+    {
+        auto json = choc::json::parse (msg);
+        auto b = bindings.find (std::string (json["fn"].getString()));
+        return b != bindings.end();
+    } catch (const::std::exception&)
+    {}
+    return false;
+}
+
+inline bool WebView::hasAsyncBinding(const std::string& msg) const
+{
+    try
+    {
+        auto json = choc::json::parse (msg);
+        auto b = asyncBindings.find (std::string (json["fn"].getString()));
+        return b != asyncBindings.end();
+    } catch (const::std::exception&)
+    {}
+    return false;
+}
+
 } // namespace choc::ui
 
 
