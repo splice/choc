@@ -151,7 +151,8 @@ public:
     bool navigate (const std::string& url);
 
     /// A callback function which can be passed to bind().
-    using CallbackFn = std::function<choc::value::Value(const choc::value::ValueView& args)>;
+    using ReplyFn = std::function<void(choc::value::Value, std::string)>;
+    using CallbackFn = std::function<void(const choc::value::ValueView& args, ReplyFn&& reply)>;
     /// Binds a C++ function to a named javascript function that can be called
     /// by code running in the browser.
     bool bind (const std::string& functionName, CallbackFn&& function);
@@ -1896,21 +1897,31 @@ inline void WebView::invokeBinding (const std::string& msg)
 
         try
         {
-            auto deletionChecker = pimpl->deletionChecker;
-            auto result = b->second (json["params"]);
+            b->second (json["params"], [=](choc::value::Value result, std::string const& errorMessage) {
+                auto deletionChecker = pimpl->deletionChecker;
+                if (deletionChecker->deleted) // in case the WebView was deleted during the callback
+                    return;
 
+                if (!errorMessage.empty())
+                {
+                    auto call = callbackItem + ".reject(" + choc::json::toString(choc::value::createString(errorMessage)) + "); delete " + callbackItem + ";";
+                    evaluateJavascript (call);
+                    return;
+                }
+
+                auto call = callbackItem + ".resolve(" + choc::json::toString (result) + "); delete " + callbackItem + ";";
+                evaluateJavascript (call);
+            });
+        }
+        catch (const std::exception& e)
+        {
+            auto deletionChecker = pimpl->deletionChecker;
             if (deletionChecker->deleted) // in case the WebView was deleted during the callback
                 return;
 
-            auto call = callbackItem + ".resolve(" + choc::json::toString (result) + "); delete " + callbackItem + ";";
+            auto call = callbackItem + ".reject(" + choc::json::toString(choc::value::createString(e.what())) + "); delete " + callbackItem + ";";
             evaluateJavascript (call);
-            return;
         }
-        catch (const std::exception&)
-        {}
-
-        auto call = callbackItem + ".reject(); delete " + callbackItem + ";";
-        evaluateJavascript (call);
     }
     catch (const std::exception&)
     {}
