@@ -1278,9 +1278,6 @@ struct WebView::Pimpl
     Pimpl (WebView& v, const Options& opts)
         : owner (v), options (opts)
     {
-        if (!options.customResourceDomain.empty())
-            resourceRequestFilterUriPrefix = "https://" + options.customResourceDomain + "/";
-
         // You cam define this macro to provide a custom way of getting a
         // choc::file::DynamicLibrary that contains the redistributable
         // Microsoft WebView2Loader.dll
