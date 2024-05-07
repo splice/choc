@@ -165,6 +165,9 @@ public:
     /// Returns a platform-specific handle for this view
     void* getViewHandle() const;
 
+    /// Clears all stored cookies
+    bool clearCookies();
+
 private:
     //==============================================================================
     struct Pimpl;
@@ -519,6 +522,17 @@ struct choc::ui::WebView::Pimpl
 
     bool loadedOK() const           { return getViewHandle() != nullptr; }
     void* getViewHandle() const     { return (CHOC_OBJC_CAST_BRIDGED void*) webview; }
+
+    bool clearCookies()
+    {
+        auto store = objc::call<id> (objc::getClass ("WKWebsiteDataStore"), "defaultDataStore");
+        auto allTypes = objc::call<id> (objc::getClass ("WKWebsiteDataStore"), "allWebsiteDataTypes");
+        objc::call<void>( store, "fetchDataRecordsOfTypes:completionHandler:", allTypes, ^(id records)
+            {
+                objc::call<void> (store, "removeDataOfTypes:forDataRecords:completionHandler:", allTypes, records, ^(void){});
+            });
+        return true;
+    }
 
     std::shared_ptr<DeletionChecker> deletionChecker { std::make_shared<DeletionChecker>() };
 
@@ -955,6 +969,7 @@ typedef interface ICoreWebView2WebResourceRequest ICoreWebView2WebResourceReques
 typedef interface ICoreWebView2WebResourceRequestedEventArgs ICoreWebView2WebResourceRequestedEventArgs;
 typedef interface ICoreWebView2WebResourceRequestedEventHandler ICoreWebView2WebResourceRequestedEventHandler;
 typedef interface ICoreWebView2WebResourceResponse ICoreWebView2WebResourceResponse;
+typedef interface ICoreWebView2CookieManager ICoreWebView2CookieManager;
 
 MIDL_INTERFACE("4e8a3389-c9d8-4bd2-b6b5-124fee6cc14d")
 ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler : public IUnknown
@@ -1100,6 +1115,13 @@ public:
      virtual HRESULT STDMETHODCALLTYPE Invoke(ICoreWebView2*, ICoreWebView2PermissionRequestedEventArgs*) = 0;
 };
 
+MIDL_INTERFACE("ca36c3e8-9c60-4c8f-a777-2247efdde784")
+ICoreWebView2CookieManager : public IUnknown
+{
+public:
+     virtual HRESULT STDMETHODCALLTYPE DeleteAllCookies() = 0;
+};
+
 MIDL_INTERFACE("76eceacb-0462-4d94-ac83-423a6793775e")
 ICoreWebView2 : public IUnknown
 {
@@ -1162,6 +1184,7 @@ public:
     virtual HRESULT STDMETHODCALLTYPE RemoveWebResourceRequestedFilter(const LPCWSTR, const COREWEBVIEW2_WEB_RESOURCE_CONTEXT) = 0;
     virtual HRESULT STDMETHODCALLTYPE add_WindowCloseRequested(void*, EventRegistrationToken*) = 0;
     virtual HRESULT STDMETHODCALLTYPE remove_WindowCloseRequested(EventRegistrationToken) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_CookieManager(ICoreWebView2CookieManager**) = 0;
 };
 
 MIDL_INTERFACE("4d00c0d1-9434-4eb6-8078-8697a560334f")
@@ -1332,6 +1355,17 @@ struct WebView::Pimpl
 
     bool loadedOK() const           { return coreWebView != nullptr; }
     void* getViewHandle() const     { return (void*) hwnd.hwnd; }
+
+    bool clearCookies()
+    {
+        ICoreWebView2CookieManager* cookieManager = nullptr;
+        const auto result = coreWebView->get_CookieManager(&cookieManager);
+        if (result == 0)
+        {
+            cookieManager->DeleteAllCookies();
+        }
+        return true;
+    }
 
     std::shared_ptr<DeletionChecker> deletionChecker { std::make_shared<DeletionChecker>() };
 
@@ -1830,6 +1864,8 @@ inline bool WebView::evaluateJavascript (const std::string& script, CompletionHa
 }
 
 inline void* WebView::getViewHandle() const                          { return pimpl != nullptr ? pimpl->getViewHandle() : nullptr; }
+
+inline bool WebView::clearCookies()                                  { return pimpl != nullptr && pimpl->clearCookies(); }
 
 inline bool WebView::bind (const std::string& functionName, CallbackFn&& fn)
 {
