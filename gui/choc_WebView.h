@@ -960,6 +960,7 @@ extern "C"
 struct EventRegistrationToken { __int64 value; };
 
 typedef interface ICoreWebView2 ICoreWebView2;
+typedef interface ICoreWebView2_2 ICoreWebView2_2;
 typedef interface ICoreWebView2Controller ICoreWebView2Controller;
 typedef interface ICoreWebView2Environment ICoreWebView2Environment;
 typedef interface ICoreWebView2HttpHeadersCollectionIterator ICoreWebView2HttpHeadersCollectionIterator;
@@ -970,6 +971,10 @@ typedef interface ICoreWebView2WebResourceRequestedEventArgs ICoreWebView2WebRes
 typedef interface ICoreWebView2WebResourceRequestedEventHandler ICoreWebView2WebResourceRequestedEventHandler;
 typedef interface ICoreWebView2WebResourceResponse ICoreWebView2WebResourceResponse;
 typedef interface ICoreWebView2CookieManager ICoreWebView2CookieManager;
+typedef interface ICoreWebView2DOMContentLoadedEventHandler ICoreWebView2DOMContentLoadedEventHandler;
+typedef interface ICoreWebView2WebResourceResponseReceivedEventHandler ICoreWebView2WebResourceResponseReceivedEventHandler;
+typedef interface ICoreWebView2Cookie ICoreWebView2Cookie;
+typedef interface ICoreWebView2GetCookiesCompletedHandler ICoreWebView2GetCookiesCompletedHandler;
 
 MIDL_INTERFACE("4e8a3389-c9d8-4bd2-b6b5-124fee6cc14d")
 ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler : public IUnknown
@@ -1112,14 +1117,21 @@ MIDL_INTERFACE("15e1c6a3-c72a-4df3-91d7-d097fbec6bfd")
 ICoreWebView2PermissionRequestedEventHandler : public IUnknown
 {
 public:
-     virtual HRESULT STDMETHODCALLTYPE Invoke(ICoreWebView2*, ICoreWebView2PermissionRequestedEventArgs*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE Invoke(ICoreWebView2*, ICoreWebView2PermissionRequestedEventArgs*) = 0;
 };
 
-MIDL_INTERFACE("ca36c3e8-9c60-4c8f-a777-2247efdde784")
+MIDL_INTERFACE("177CD9E7-B6F5-451A-94A0-5D7A3A4C4141")
 ICoreWebView2CookieManager : public IUnknown
 {
 public:
-     virtual HRESULT STDMETHODCALLTYPE DeleteAllCookies() = 0;
+    virtual HRESULT STDMETHODCALLTYPE CreateCookie(LPCWSTR name, LPCWSTR value, LPCWSTR domain, LPCWSTR path, ICoreWebView2Cookie * *cookie) = 0;
+    virtual HRESULT STDMETHODCALLTYPE CopyCookie(ICoreWebView2Cookie* cookieParam, ICoreWebView2Cookie** cookie) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetCookies(LPCWSTR uri, ICoreWebView2GetCookiesCompletedHandler* handler) = 0;
+    virtual HRESULT STDMETHODCALLTYPE AddOrUpdateCookie(ICoreWebView2Cookie* cookie) = 0;
+    virtual HRESULT STDMETHODCALLTYPE DeleteCookie(ICoreWebView2Cookie* cookie) = 0;
+    virtual HRESULT STDMETHODCALLTYPE DeleteCookies(LPCWSTR name, LPCWSTR uri) = 0;
+    virtual HRESULT STDMETHODCALLTYPE DeleteCookiesWithDomainAndPath(LPCWSTR name, LPCWSTR domain, LPCWSTR path) = 0;
+    virtual HRESULT STDMETHODCALLTYPE DeleteAllCookies() = 0;
 };
 
 MIDL_INTERFACE("76eceacb-0462-4d94-ac83-423a6793775e")
@@ -1184,7 +1196,19 @@ public:
     virtual HRESULT STDMETHODCALLTYPE RemoveWebResourceRequestedFilter(const LPCWSTR, const COREWEBVIEW2_WEB_RESOURCE_CONTEXT) = 0;
     virtual HRESULT STDMETHODCALLTYPE add_WindowCloseRequested(void*, EventRegistrationToken*) = 0;
     virtual HRESULT STDMETHODCALLTYPE remove_WindowCloseRequested(EventRegistrationToken) = 0;
+};
+
+MIDL_INTERFACE("9E8F0CF8-E670-4B5E-B2BC-73E061E3184C")
+ICoreWebView2_2 : public ICoreWebView2
+{
+public:
+    virtual HRESULT STDMETHODCALLTYPE add_WebResourceResponseReceived(ICoreWebView2WebResourceResponseReceivedEventHandler* eventHandler, EventRegistrationToken* token) = 0;
+    virtual HRESULT STDMETHODCALLTYPE remove_WebResourceResponseReceived(EventRegistrationToken token) = 0;
+    virtual HRESULT STDMETHODCALLTYPE NavigateWithWebResourceRequest(ICoreWebView2WebResourceRequest* request) = 0;
+    virtual HRESULT STDMETHODCALLTYPE add_DOMContentLoaded(ICoreWebView2DOMContentLoadedEventHandler* eventHandler, EventRegistrationToken* token) = 0;
+    virtual HRESULT STDMETHODCALLTYPE remove_DOMContentLoaded(EventRegistrationToken token) = 0;
     virtual HRESULT STDMETHODCALLTYPE get_CookieManager(ICoreWebView2CookieManager**) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_Environment(ICoreWebView2Environment** environment) = 0;
 };
 
 MIDL_INTERFACE("4d00c0d1-9434-4eb6-8078-8697a560334f")
@@ -1358,13 +1382,16 @@ struct WebView::Pimpl
 
     bool clearCookies()
     {
-        ICoreWebView2CookieManager* cookieManager = nullptr;
-        const auto result = coreWebView->get_CookieManager(&cookieManager);
-        if (result == 0)
+        ICoreWebView2_2* webview2_2 = nullptr;
+        if (coreWebView->QueryInterface(&webview2_2) == S_OK)
         {
-            cookieManager->DeleteAllCookies();
+            ICoreWebView2CookieManager* cookieManager = nullptr;
+            if (webview2_2->get_CookieManager(&cookieManager) == S_OK && cookieManager != nullptr)
+            {
+              return cookieManager->DeleteAllCookies() == S_OK;
+            }
         }
-        return true;
+        return false;
     }
 
     std::shared_ptr<DeletionChecker> deletionChecker { std::make_shared<DeletionChecker>() };
