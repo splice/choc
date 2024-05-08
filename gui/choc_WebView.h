@@ -1117,7 +1117,7 @@ MIDL_INTERFACE("15e1c6a3-c72a-4df3-91d7-d097fbec6bfd")
 ICoreWebView2PermissionRequestedEventHandler : public IUnknown
 {
 public:
-    virtual HRESULT STDMETHODCALLTYPE Invoke(ICoreWebView2*, ICoreWebView2PermissionRequestedEventArgs*) = 0;
+     virtual HRESULT STDMETHODCALLTYPE Invoke(ICoreWebView2*, ICoreWebView2PermissionRequestedEventArgs*) = 0;
 };
 
 MIDL_INTERFACE("177CD9E7-B6F5-451A-94A0-5D7A3A4C4141")
