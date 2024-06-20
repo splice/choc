@@ -1540,6 +1540,7 @@ private:
                          && settings != nullptr)
                     {
                         settings->put_AreDevToolsEnabled (options.enableDebugMode);
+                        settings->put_IsStatusBarEnabled (false);
 
                         if (! options.customUserAgent.empty())
                         {
