@@ -78,6 +78,11 @@ public:
         /// for the first click to give the webview focus but not trigger any action.
         bool acceptsFirstMouseClick = false;
 
+        /// This will enable key commands like copy, paste, and undo
+        /// On Windows, this will also enable browser implementations of accelerator
+        /// keys (e.g. Ctrl+F for find-in-page)
+        bool enableKeyCommands = true;
+
         /// Optional user-agent string which can be used to override the default. Leave
         // this empty for default behaviour.
         std::string customUserAgent;
@@ -533,8 +538,8 @@ struct choc::ui::WebView::Pimpl
 
     bool clearCookies()
     {
-        auto store = objc::call<id> (objc::getClass ("WKWebsiteDataStore"), "defaultDataStore");
-        auto allTypes = objc::call<id> (objc::getClass ("WKWebsiteDataStore"), "allWebsiteDataTypes");
+        auto store = objc::callClass<id> ("WKWebsiteDataStore", "defaultDataStore");
+        auto allTypes = objc::callClass<id> ("WKWebsiteDataStore", "allWebsiteDataTypes");
         objc::call<void>( store, "fetchDataRecordsOfTypes:completionHandler:", allTypes, ^(id records)
             {
                 objc::call<void> (store, "removeDataOfTypes:forDataRecords:completionHandler:", allTypes, records, ^(void){});
@@ -645,7 +650,7 @@ private:
 
     id allocateWebview()
     {
-        static WebviewClass c;
+        static WebviewClass c(options->enableKeyCommands);
         return objc::call<id> ((id) c.webviewClass, "alloc");
     }
 
@@ -788,7 +793,7 @@ private:
 
     struct WebviewClass
     {
-        WebviewClass()
+        WebviewClass(bool enableKeyCommands)
         {
             webviewClass = choc::objc::createDelegateClass ("WKWebView", "CHOCWebView_");
 
@@ -801,14 +806,17 @@ private:
                                 return false;
                             }), "B@:@");
 
-            class_addMethod (webviewClass, sel_registerName ("performKeyEquivalent:"),
-                            (IMP) (+[](id self, SEL, id e) -> BOOL
-                            {
-                                if (auto p = getPimpl (self))
-                                    return p->performKeyEquivalent (self, e);
+            if (enableKeyCommands)
+            {
+                class_addMethod (webviewClass, sel_registerName ("performKeyEquivalent:"),
+                                (IMP) (+[](id self, SEL, id e) -> BOOL
+                                {
+                                    if (auto p = getPimpl (self))
+                                        return p->performKeyEquivalent (self, e);
 
-                                return false;
-                            }), "B@:@");
+                                    return false;
+                                }), "B@:@");
+            }
 
             objc_registerClassPair (webviewClass);
         }
@@ -1105,6 +1113,14 @@ ICoreWebView2Settings2 : public ICoreWebView2Settings
 public:
     virtual HRESULT STDMETHODCALLTYPE get_UserAgent(LPWSTR * userAgent) = 0;
     virtual HRESULT STDMETHODCALLTYPE put_UserAgent(LPCWSTR userAgent) = 0;
+};
+
+MIDL_INTERFACE("fdb5ab74-af33-4854-84f0-0a631deb5eba")
+ICoreWebView2Settings3 : public ICoreWebView2Settings2
+{
+public:
+    virtual HRESULT STDMETHODCALLTYPE get_AreBrowserAcceleratorKeysEnabled(BOOL* enabled) = 0;
+    virtual HRESULT STDMETHODCALLTYPE put_AreBrowserAcceleratorKeysEnabled(BOOL enabled) = 0;
 };
 
 MIDL_INTERFACE("15e1c6a3-c72a-4df3-91d7-d097fbec6bfd")
@@ -1538,7 +1554,7 @@ private:
                         settings->put_AreDevToolsEnabled (options.enableDebugMode);
                         settings->put_IsStatusBarEnabled (false);
 
-                        if (! options.customUserAgent.empty())
+                        if (!options.customUserAgent.empty())
                         {
                             ICoreWebView2Settings2* settings2 = nullptr;
 
@@ -1550,6 +1566,20 @@ private:
                             {
                                 auto agent = createUTF16StringFromUTF8 (options.customUserAgent);
                                 settings2->put_UserAgent (agent.c_str());
+                            }
+                        }
+
+                        if (!options.enableKeyCommands)
+                        {
+                            ICoreWebView2Settings3* settings3 = nullptr;
+
+                            // This palaver is needed because __uuidof doesn't work in MINGW
+                            auto guid = IID { 0xfdb5ab74, 0xaf33, 0x4854, { 0x84, 0xf0, 0x0a, 0x63, 0x1d, 0xeb, 0x5e, 0xba } };
+
+                            if (settings->QueryInterface (guid, (void**) std::addressof (settings3)) == S_OK
+                                 && settings3 != nullptr)
+                            {
+                                settings3->put_AreBrowserAcceleratorKeysEnabled(false);
                             }
                         }
                     }
