@@ -122,6 +122,9 @@ public:
         /// need to.
         bool enableDefaultClipboardKeyShortcutsInSafari = true;
 
+        /// Option to enable or disable the ability to scroll with the space key
+        bool enableSpaceToScroll = true;
+
         /// On Windows, this will enable browser implementations of accelerator keys
         /// (e.g. Ctrl+F for find-in-page)
         bool enableWindowsAcceleratorKeys = true;
@@ -775,6 +778,18 @@ private:
         return false;
     }
 
+    BOOL shouldIgnoreKey (id self, id e)
+    {
+        constexpr auto NSEventTypeKeyDown = 10;
+        if (objc::call<int> (e, "type") == NSEventTypeKeyDown)
+        {
+            auto path = objc::getString (objc::call<id> (e, "charactersIgnoringModifiers"));
+            if (path == " ") return !options->enableSpaceToScroll;
+        }
+
+        return false;
+    }
+
     void handleError (id error)
     {
         static constexpr int NSURLErrorCancelled = -999;
@@ -817,8 +832,12 @@ private:
                             (IMP) (+[](id self, SEL, id e) -> BOOL
                             {
                                 if (auto p = getPimpl (self))
+                                {
                                     if (p->performKeyEquivalent (self, e))
                                         return true;
+                                    if (p->shouldIgnoreKey (self, e))
+                                        return false;
+                                }
 
                                 return choc::objc::callSuper<BOOL> (self, "performKeyEquivalent:", e);
                             }), "B@:@");
