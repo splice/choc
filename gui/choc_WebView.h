@@ -78,11 +78,6 @@ public:
         /// for the first click to give the webview focus but not trigger any action.
         bool acceptsFirstMouseClick = false;
 
-        /// This will enable key commands like copy, paste, and undo
-        /// On Windows, this will also enable browser implementations of accelerator
-        /// keys (e.g. Ctrl+F for find-in-page)
-        bool enableKeyCommands = true;
-
         /// Optional user-agent string which can be used to override the default. Leave
         // this empty for default behaviour.
         std::string customUserAgent;
@@ -126,6 +121,10 @@ public:
         /// otherwise wouldn't work by default. This lets you turn that off if you
         /// need to.
         bool enableDefaultClipboardKeyShortcutsInSafari = true;
+
+        /// On Windows, this will also enable browser implementations of accelerator
+        /// keys (e.g. Ctrl+F for find-in-page)
+        bool enableWindowsAcceleratorKeys = true;
     };
 
     /// Creates a WebView with default options
@@ -655,7 +654,7 @@ private:
 
     id allocateWebview()
     {
-        static WebviewClass c(options->enableKeyCommands);
+        static WebviewClass c;
         return objc::call<id> ((id) c.webviewClass, "alloc");
     }
 
@@ -801,7 +800,7 @@ private:
 
     struct WebviewClass
     {
-        WebviewClass(bool enableKeyCommands)
+        WebviewClass()
         {
             webviewClass = choc::objc::createDelegateClass ("WKWebView", "CHOCWebView_");
 
@@ -814,17 +813,15 @@ private:
                                 return false;
                             }), "B@:@");
 
-            if (enableKeyCommands)
-            {
-                class_addMethod (webviewClass, sel_registerName ("performKeyEquivalent:"),
-                                (IMP) (+[](id self, SEL, id e) -> BOOL
-                                {
-                                    if (auto p = getPimpl (self))
-                                        return p->performKeyEquivalent (self, e);
+            class_addMethod (webviewClass, sel_registerName ("performKeyEquivalent:"),
+                            (IMP) (+[](id self, SEL, id e) -> BOOL
+                            {
+                                if (auto p = getPimpl (self))
+                                    if (p->performKeyEquivalent (self, e))
+                                        return true;
 
-                                    return false;
-                                }), "B@:@");
-            }
+                                return choc::objc::callSuper<BOOL> (self, "performKeyEquivalent:", e);
+                            }), "B@:@");
 
             objc_registerClassPair (webviewClass);
         }
@@ -1577,7 +1574,7 @@ private:
                             }
                         }
 
-                        if (!options.enableKeyCommands)
+                        if (!options.enableWindowsAcceleratorKeys)
                         {
                             ICoreWebView2Settings3* settings3 = nullptr;
 
