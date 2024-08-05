@@ -46,7 +46,7 @@
 #include "../text/choc_TextTable.h"
 #include "../text/choc_Files.h"
 #include "../text/choc_Wildcard.h"
-#include "../text/choc_MIMETypes.h"
+#include "../network/choc_MIMETypes.h"
 #include "../memory/choc_Base64.h"
 #include "../memory/choc_xxHash.h"
 #include "../math/choc_MathHelpers.h"
@@ -75,7 +75,12 @@
 #include "../javascript/choc_javascript_Timer.h"
 #include "../javascript/choc_javascript_Console.h"
 
+#if CHOC_ENABLE_HTTP_SERVER_TEST
+ #include "../network/choc_HTTPServer.h"
+#endif
+
 #include "choc_UnitTest.h"
+#include <future>
 
 /**
     To keep things simpole for users, I've just shoved all the tests for everything into this
@@ -95,6 +100,35 @@ namespace choc_unit_tests
 /// tests. The TestProgress object contains a callback that will be used
 /// to log its progress.
 bool runAllTests (choc::test::TestProgress&);
+
+static void runTestOnMessageThread (std::function<void(const std::function<void()>&)> setup,
+                                    std::function<void()> handleResult = {})
+{
+    std::atomic_bool finished { false };
+    std::function<void()> setFinished = [&] { finished = true; };
+
+    choc::messageloop::postMessage ([&]
+    {
+        setup (setFinished);
+    });
+
+    while (! finished)
+        std::this_thread::yield();
+
+    if (handleResult)
+    {
+        finished = false;
+
+        choc::messageloop::postMessage ([&]
+        {
+            handleResult();
+            finished = true;
+        });
+
+        while (! finished)
+            std::this_thread::yield();
+    }
+}
 
 
 inline void testPlatform (choc::test::TestProgress& progress)
@@ -171,7 +205,7 @@ inline void testPlatform (choc::test::TestProgress& progress)
         for (int64_t i : { (int64_t) 0, (int64_t) 1, (int64_t) -1, (int64_t) 3, (int64_t) -3, (int64_t) 65535, (int64_t) -65535, (int64_t) (1ll << 31), (int64_t) 0x8000000000000000ull })
             CHOC_EXPECT_EQ (i, zigzagDecode (zigzagEncode (i));)
 
-        for (int32_t i : { (int32_t) 0, (int32_t) 1, (int32_t) -1, (int32_t) 3, (int32_t) -3, (int32_t) 65535, (int32_t) -65535, (int32_t) (1 << 31), (int32_t) 0x80000000u })
+        for (int32_t i : { (int32_t) 0, (int32_t) 1, (int32_t) -1, (int32_t) 3, (int32_t) -3, (int32_t) 65535, (int32_t) -65535, (int32_t) (1u << 31), (int32_t) 0x80000000u })
             CHOC_EXPECT_EQ (i, zigzagDecode (zigzagEncode (i));)
 
         {
@@ -628,11 +662,11 @@ inline void testStringUtilities (choc::test::TestProgress& progress)
 
     {
         CHOC_TEST (MIMETypes)
-        CHOC_EXPECT_EQ (choc::web::getMIMETypeFromFilename ("dfsdfsg/sdfgds.txt"), "text/plain");
-        CHOC_EXPECT_EQ (choc::web::getMIMETypeFromFilename (".ogg"), "audio/ogg");
-        CHOC_EXPECT_EQ (choc::web::getMIMETypeFromFilename (".."), "application/text");
-        CHOC_EXPECT_EQ (choc::web::getMIMETypeFromFilename ({}, "blah"), "blah");
-        CHOC_EXPECT_EQ (choc::web::getMIMETypeFromFilename (".ogg?foo...x"), "audio/ogg");
+        CHOC_EXPECT_EQ (choc::network::getMIMETypeFromFilename ("dfsdfsg/sdfgds.txt"), "text/plain");
+        CHOC_EXPECT_EQ (choc::network::getMIMETypeFromFilename (".ogg"), "audio/ogg");
+        CHOC_EXPECT_EQ (choc::network::getMIMETypeFromFilename (".."), "application/text");
+        CHOC_EXPECT_EQ (choc::network::getMIMETypeFromFilename ({}, "blah"), "blah");
+        CHOC_EXPECT_EQ (choc::network::getMIMETypeFromFilename (".ogg?foo...x"), "audio/ogg");
     }
 
     {
@@ -2010,7 +2044,7 @@ inline void testMIDIFiles (choc::test::TestProgress& progress)
 
             std::string output1, output2;
 
-            mf.iterateEvents ([&] (const choc::midi::Message& m, double time)
+            mf.iterateEvents ([&] (const choc::midi::LongMessage& m, double time)
                               {
                                   output1 += choc::text::floatToString (time, 3) + " " + m.toHexString() + "\n";
                               });
@@ -2067,7 +2101,7 @@ static bool areValuesEqual (const choc::value::ValueView& v1, const choc::value:
     return false;
 }
 
-inline void testJavascript (choc::test::TestProgress& progress, std::function<choc::javascript::Context()> createContext, bool isDuktape)
+inline void testJavascriptPlatform (choc::test::TestProgress& progress, std::function<choc::javascript::Context()> createContext, bool isDuktape)
 {
     {
         CHOC_TEST (Basics)
@@ -2170,128 +2204,143 @@ inline void testJavascript (choc::test::TestProgress& progress, std::function<ch
     {
         CHOC_TEST (Async)
 
-        try
+        choc::value::Value result;
+        std::string error;
+        choc::javascript::Context context;
+
+        runTestOnMessageThread ([&] (const std::function<void()>& finished)
         {
-            auto context = createContext();
-
-            context.run ("var x = 1234;");
-            choc::value::Value result;
-            std::string error;
-
-            choc::messageloop::postMessage ([&]
+            try
             {
-                context.run ("dfjdfghj.dfgdfsg()",
-                    [&] (const std::string& e, const choc::value::ValueView&)
-                    {
-                        error = e;
-                    });
+                context = createContext();
 
-                context.run ("x + 1",
-                    [&] (const std::string&, const choc::value::ValueView& r)
-                    {
-                        result = r;
-                        choc::messageloop::stop();
-                    });
-            });
+                context.run ("var x = 1234;");
 
-            choc::messageloop::run();
-            CHOC_EXPECT_EQ ("1235", choc::json::toString (result));
-            CHOC_EXPECT_TRUE (! error.empty());
-        }
-        CHOC_CATCH_UNEXPECTED_EXCEPTION
+                choc::messageloop::postMessage ([&]
+                {
+                    context.run ("dfjdfghj.dfgdfsg()",
+                        [&] (const std::string& e, const choc::value::ValueView&)
+                        {
+                            error = e;
+                        });
+
+                    context.run ("x + 1",
+                        [&] (const std::string&, const choc::value::ValueView& r)
+                        {
+                            result = r;
+                            finished();
+                        });
+                });
+            }
+            CHOC_CATCH_UNEXPECTED_EXCEPTION
+        });
+
+        CHOC_EXPECT_EQ ("1235", choc::json::toString (result));
+        CHOC_EXPECT_TRUE (! error.empty());
     }
 
     if (! isDuktape)
     {
         CHOC_TEST (CustomModules)
 
-        try
+        bool worked = false;
+        choc::javascript::Context context;
+
+        runTestOnMessageThread ([&] (const std::function<void()>& finished)
         {
-            auto context = createContext();
-            bool worked = false;
-
-            context.registerFunction ("success", [&] (choc::javascript::ArgumentList) -> choc::value::Value
-                                                 {
-                                                     worked = true;
-                                                     return {};
-                                                 });
-
-            choc::messageloop::postMessage ([&]
+            try
             {
-                context.runModule (R"(
-                    import * as XX from "test_module";
-                    if (XX.wasOK()) success();
-                    )",
-                    [] (std::string_view name) -> std::optional<std::string>
-                    {
-                        if (name == "test_module")
-                            return "export function wasOK() { return true; }";
+                context = createContext();
 
-                        return {};
-                    },
-                    [] (const std::string&, const choc::value::ValueView&)
-                    {
-                        choc::messageloop::stop();
-                    });
-            });
+                context.registerFunction ("success", [&] (choc::javascript::ArgumentList) -> choc::value::Value
+                                                    {
+                                                        worked = true;
+                                                        return {};
+                                                    });
 
-            choc::messageloop::run();
-            CHOC_EXPECT_TRUE (worked);
-        }
-        CHOC_CATCH_UNEXPECTED_EXCEPTION
+                choc::messageloop::postMessage ([&]
+                {
+                    context.runModule (R"(
+                        import * as XX from "test_module";
+                        if (XX.wasOK()) success();
+                        )",
+                        [] (std::string_view name) -> std::optional<std::string>
+                        {
+                            if (name == "test_module")
+                                return "export function wasOK() { return true; }";
+
+                            return {};
+                        },
+                        [&] (const std::string&, const choc::value::ValueView&)
+                        {
+                            finished();
+                        });
+                });
+            }
+            CHOC_CATCH_UNEXPECTED_EXCEPTION
+        });
+
+        CHOC_EXPECT_TRUE (worked);
     }
 
     {
         CHOC_TEST (Timers)
 
-        try
+        int result = 0;
+        choc::javascript::Context context;
+        choc::messageloop::Timer timer;
+
+        runTestOnMessageThread ([&] (const std::function<void()>& finished)
         {
-            auto context = createContext();
-            registerTimerFunctions (context);
-            int result = 0;
-            context.registerFunction ("testDone", [&] (choc::javascript::ArgumentList args) -> choc::value::Value
-                                                   {
-                                                       result = args.get<int> (0);
-                                                       choc::messageloop::stop();
-                                                       return {};
-                                                   });
-
-            auto t = choc::messageloop::Timer (100, [&]
+            try
             {
-                context.run (R"(
-                    var result = 0;
-                    var intID;
+                context = createContext();
+                registerTimerFunctions (context);
+                context.registerFunction ("testDone", [&] (choc::javascript::ArgumentList args) -> choc::value::Value
+                {
+                    result = args.get<int> (0);
+                    finished();
+                    return {};
+                });
 
-                    function i()
-                    {
-                        if (result == 5)
-                            clearInterval (intID);
-                        else
-                            ++result;
-                    }
+                timer = choc::messageloop::Timer (100, [&]
+                {
+                    context.run (R"(
+                        var result = 0;
+                        var intID;
 
-                    function stop() { testDone (result); }
+                        function i()
+                        {
+                            if (result == 5)
+                                clearInterval (intID);
+                            else
+                                ++result;
+                        }
 
-                    function t1() {}
+                        function stop() { testDone (result); }
 
-                    function t2()
-                    {
-                        clearInterval (intID);
-                        setTimeout (stop, 0);
-                    }
+                        function t1() {}
 
-                    setTimeout (t2, 600.1);
-                    setTimeout (t1, 100);
-                    intID = setInterval (i, 60.2);
-                )");
+                        function t2()
+                        {
+                            testDone (result);
+                            // clearInterval (intID);
+                            // setTimeout (stop, 0);
+                        }
 
-                return false;
-            });
+                        setTimeout (t2, 600.1);
+                        setTimeout (t1, 100);
+                        intID = setInterval (i, 60.2);
+                    )");
 
-            choc::messageloop::run();
-            CHOC_EXPECT_TRUE (result == 4 || result == 5);
-        }
-        CHOC_CATCH_UNEXPECTED_EXCEPTION
+                    return false;
+                });
+            }
+            CHOC_CATCH_UNEXPECTED_EXCEPTION
+        },
+        [&] { timer = {}; context = {}; });
+
+        CHOC_EXPECT_TRUE (result == 4 || result == 5);
     }
 
     if (! isDuktape)
@@ -2328,14 +2377,14 @@ inline void testJavascript (choc::test::TestProgress& progress)
 {
    #if CHOC_V8_AVAILABLE
     CHOC_CATEGORY (Javascript_V8);
-    testJavascript (progress, [] { return choc::javascript::createV8Context(); }, false);
+    testJavascriptPlatform (progress, [] { return choc::javascript::createV8Context(); }, false);
    #endif
 
     CHOC_CATEGORY (Javascript_Duktape);
-    testJavascript (progress, [] { return choc::javascript::createDuktapeContext(); }, true);
+    testJavascriptPlatform (progress, [] { return choc::javascript::createDuktapeContext(); }, true);
 
     CHOC_CATEGORY (Javascript_QuickJS);
-    testJavascript (progress, [] { return choc::javascript::createQuickJSContext(); }, false);
+    testJavascriptPlatform (progress, [] { return choc::javascript::createQuickJSContext(); }, false);
 }
 
 //==============================================================================
@@ -2346,50 +2395,59 @@ inline void testWebview (choc::test::TestProgress& progress)
     {
         CHOC_TEST (Javascript)
 
-        choc::ui::WebView::Options opts;
-        opts.enableDebugMode = true;
-        choc::ui::WebView webview (opts);
-
-        if (! webview.loadedOK())
-        {
-            std::cout << "WebView was unavailable" << std::endl;
-            return;
-        }
-
-        std::string result;
-
-        webview.bind ("succeeded", [&] (const choc::value::ValueView& args)
-        {
-            result = choc::json::toString (args);
-            choc::messageloop::stop();
-            return choc::value::Value();
-        });
-
-        auto t1 = choc::messageloop::Timer (100, [&]
-        {
-            webview.evaluateJavascript ("succeeded (1234, 5678);");
-            return false;
-        });
-
-        std::string error1, error2, error3;
+        std::string result, error1 = "x", error2, error3 = "x";
         choc::value::Value value1, value2, value3;
+        std::unique_ptr<choc::ui::WebView> webview;
+        choc::messageloop::Timer timer;
+        bool unavailable = false;
 
-        webview.evaluateJavascript ("let a = { x: [1, 2, 3], y: 987.0, z: true }; a", [&] (const std::string& error, const choc::value::ValueView& value)
+        runTestOnMessageThread ([&] (const std::function<void()>& finished)
         {
-            error1 = error; value1 = value;
-        });
+            choc::ui::WebView::Options opts;
+            opts.enableDebugMode = true;
+            webview = std::make_unique<choc::ui::WebView> (opts);
 
-        webview.evaluateJavascript ("return 1234;", [&] (const std::string& error, const choc::value::ValueView& value)
-        {
-            error2 = error; value2 = value;
-        });
+            if (! webview->loadedOK())
+            {
+                std::cout << "WebView was unavailable" << std::endl;
+                unavailable = true;
+                finished();
+                return;
+            }
 
-        webview.evaluateJavascript ("", [&] (const std::string& error, const choc::value::ValueView& value)
-        {
-            error3 = error; value3 = value;
-        });
+            webview->bind ("succeeded", [&] (const choc::value::ValueView& args)
+            {
+                result = choc::json::toString (args);
+                finished();
+                return choc::value::Value();
+            });
 
-        choc::messageloop::run();
+            webview->evaluateJavascript ("let a = { x: [1, 2, 3], y: 987.0, z: true }; a", [&] (const std::string& error, const choc::value::ValueView& value)
+            {
+                error1 = error; value1 = value;
+            });
+
+            webview->evaluateJavascript ("return 1234;", [&] (const std::string& error, const choc::value::ValueView& value)
+            {
+                error2 = error; value2 = value;
+            });
+
+            webview->evaluateJavascript ("", [&] (const std::string& error, const choc::value::ValueView& value)
+            {
+                error3 = error; value3 = value;
+            });
+
+            timer = choc::messageloop::Timer (200, [&]
+            {
+                webview->evaluateJavascript ("succeeded (1234, 5678);");
+                return false;
+            });
+        },
+        [&] { webview.reset(); timer = {}; });
+
+        if (unavailable)
+            return;
+
         CHOC_EXPECT_EQ (result, "[1234, 5678]");
         CHOC_EXPECT_TRUE (error1.empty());
         CHOC_EXPECT_EQ (choc::json::toString (value1), R"({"x": [1, 2, 3], "y": 987, "z": true})");
@@ -2422,24 +2480,29 @@ fetch (new Request("./hello.txt"))
             return { path, "text/plain" };
         };
 
-        choc::ui::WebView webview (opts);
-
-        if (! webview.loadedOK())
-        {
-            std::cout << "WebView was unavailable" << std::endl;
-            return;
-        }
-
+        std::unique_ptr<choc::ui::WebView> webview;
         std::string result;
 
-        webview.bind ("succeeded", [&] (const choc::value::ValueView& args)
+        runTestOnMessageThread ([&] (const std::function<void()>& finished)
         {
-            result = choc::json::toString (args);
-            choc::messageloop::stop();
-            return choc::value::Value();
-        });
+            webview = std::make_unique<choc::ui::WebView> (opts);
 
-        choc::messageloop::run();
+            if (! webview->loadedOK())
+            {
+                std::cout << "WebView was unavailable" << std::endl;
+                finished();
+                return;
+            }
+
+            webview->bind ("succeeded", [&] (const choc::value::ValueView& args)
+            {
+                result = choc::json::toString (args);
+                finished();
+                return choc::value::Value();
+            });
+        },
+        [&] { webview.reset(); });
+
         CHOC_EXPECT_TRUE (choc::text::contains (result, "hello.txt"));
     }
 }
@@ -2726,33 +2789,39 @@ inline void testTimers (choc::test::TestProgress& progress)
         CHOC_TEST (Timers)
 
         int count = 0, messageCount = 0;
+        bool messageThread1 = false, messageThread2 = false;
+        choc::messageloop::Timer t1, t2;
 
-        auto t1 = choc::messageloop::Timer (100, [&]
+        runTestOnMessageThread ([&] (const std::function<void()>& finished)
         {
-            return ++count != 13;
-        });
-
-        auto t2 = choc::messageloop::Timer (1500, [&]
-        {
-            if (count < 13)
-                return true;
-
-            choc::messageloop::postMessage ([&messageCount, count]
+            t1 = choc::messageloop::Timer (100, [&]
             {
-                messageCount = count;
-                choc::messageloop::stop();
+                return ++count != 13;
             });
 
-            return false;
+            t2 = choc::messageloop::Timer (1500, [&]
+            {
+                if (count < 13)
+                    return true;
+
+                choc::messageloop::postMessage ([&finished, &messageCount, count]
+                {
+                    messageCount = count;
+                    finished();
+                });
+
+                return false;
+            });
+
+            choc::messageloop::postMessage ([&] { messageThread1 = choc::messageloop::callerIsOnMessageThread(); });
+            auto t = std::thread ([&] { messageThread2 = ! choc::messageloop::callerIsOnMessageThread(); });
+            t.join();
+        },
+        [&]
+        {
+            t1 = {}; t2 = {};
         });
 
-        bool messageThread1 = false, messageThread2 = false;
-        choc::messageloop::postMessage ([&] { messageThread1 = choc::messageloop::callerIsOnMessageThread(); });
-        auto t = std::thread ([&] { messageThread2 = ! choc::messageloop::callerIsOnMessageThread(); });
-
-        choc::messageloop::run();
-
-        t.join();
         CHOC_EXPECT_EQ (messageCount, 13);
         CHOC_EXPECT_TRUE (messageThread1);
         CHOC_EXPECT_TRUE (messageThread2);
@@ -2849,7 +2918,7 @@ inline void testFileWatcher (choc::test::TestProgress& progress)
 
         choc::file::Watcher watcher (folder, [&] (const choc::file::Watcher::Event& e)
         {
-            std::lock_guard<decltype(lock)> lg (lock);
+            std::scoped_lock lg (lock);
 
             switch (e.eventType)
             {
@@ -2873,13 +2942,13 @@ inline void testFileWatcher (choc::test::TestProgress& progress)
             for (int i = 0; i < 400; ++i)
             {
                 std::this_thread::sleep_for (std::chrono::milliseconds (10));
-                std::lock_guard<decltype(lock)> lg (lock);
+                std::scoped_lock lg (lock);
 
                 if (choc::text::contains (lastEvent, contentNeeded))
                     return;
             }
 
-            std::lock_guard<decltype(lock)> lg (lock);
+            std::scoped_lock lg (lock);
             CHOC_FAIL ("Expected '" + std::string (contentNeeded) + "' in '" + lastEvent + "'");
         };
 
@@ -2956,6 +3025,7 @@ static void testZLIB (choc::test::TestProgress& progress)
                 in.seekg (static_cast<std::istream::off_type> (start), std::ios_base::beg);
                 CHOC_EXPECT_EQ (in.tellg(), static_cast<std::istream::off_type> (start));
                 in.read (buffer.data(), static_cast<std::streamsize> (len));
+                CHOC_EXPECT_EQ (in.gcount(), static_cast<std::istream::off_type> (len));
                 CHOC_EXPECT_EQ (in.tellg(), static_cast<std::istream::off_type> (start + len));
                 CHOC_EXPECT_TRUE (std::string (buffer.data(), len) == original.substr (start, len));
             };
@@ -3062,8 +3132,16 @@ static void testZipFile (choc::test::TestProgress& progress)
                 auto reader = item.createReader();
 
                 f.data.resize (item.uncompressedSize);
-                reader->read (static_cast<std::ifstream::char_type*> (f.data.data()),
-                              static_cast<std::streamsize> (item.uncompressedSize));
+
+                size_t numRead = 0;
+
+                while (numRead < item.uncompressedSize)
+                {
+                    std::istream::char_type c;
+                    CHOC_EXPECT_TRUE (static_cast<bool> (reader->get (c)));
+                    f.data[numRead++] = c;
+                }
+
                 check (f);
             }
         }
@@ -3071,9 +3149,187 @@ static void testZipFile (choc::test::TestProgress& progress)
     }
 }
 
+//==============================================================================
+static void testHTTPServer (choc::test::TestProgress& progress)
+{
+    (void) progress;
+
+   #if CHOC_ENABLE_HTTP_SERVER_TEST
+    struct TestClient
+    {
+        TestClient (std::string host, uint16_t port, std::function<void (std::string_view)> onMessage)
+            : onMessageRead (std::move (onMessage))
+        {
+            // Look up the domain name
+            auto results = resolver.resolve (host, std::to_string (port));
+
+            // Make the connection on the IP address we get from a lookup
+            boost::asio::connect (ws.next_layer(), results.begin(), results.end());
+
+            // Set a decorator to change the User-Agent of the handshake
+            ws.set_option (boost::beast::websocket::stream_base::decorator(
+                [] (boost::beast::websocket::request_type& req)
+                {
+                    req.set (boost::beast::http::field::user_agent,
+                        std::string (BOOST_BEAST_VERSION_STRING) + " websocket-client-coro");
+                }));
+
+            // Perform the websocket handshake
+            ws.handshake (host, "/test123");
+            ws.async_read (destBuffer, [this] (auto code, auto bytes) { readMessage (code, bytes); });
+
+            std::atomic<bool> threadStarted { false };
+
+            connection = std::thread ([this, &threadStarted]
+            {
+                try
+                {
+                    threadStarted = true;
+
+                    while (! threadShouldExit)
+                        ioc.run();
+                }
+                catch (std::exception const&) {}
+            });
+
+            // Wait for thread to be waiting for events
+            while (! threadStarted)
+                std::this_thread::sleep_for (std::chrono::milliseconds (1));
+        }
+
+        ~TestClient()
+        {
+            try
+            {
+                threadShouldExit = true;
+                ioc.stop();
+                ws.close (boost::beast::websocket::close_code::normal);
+            }
+            catch (std::exception const& e)
+            {
+                std::cerr << "Error: " << e.what() << std::endl;
+            }
+
+            connection.join();
+        }
+
+        void send (std::string text)
+        {
+            ws.write (boost::asio::buffer (text));
+        }
+
+        boost::asio::io_context ioc;
+        boost::asio::ip::tcp::resolver resolver { ioc };
+        boost::beast::websocket::stream<boost::asio::ip::tcp::socket> ws { ioc };
+        boost::beast::flat_buffer destBuffer;
+
+        std::function<void (std::string_view)> onMessageRead;
+        std::thread connection;
+        std::atomic<bool> threadShouldExit { false };
+
+        void readMessage (boost::beast::error_code ec, std::size_t numBytes)
+        {
+            if (numBytes > 0 && ! ec)
+            {
+                onMessageRead (boost::beast::buffers_to_string (destBuffer.data()));
+                destBuffer.clear();
+
+                // Prepare another read callback to be processed by the thread
+                ws.async_read (destBuffer,
+                            [this] (auto code, auto bytes) { readMessage (code, bytes); });
+            }
+        }
+    };
+
+    using namespace std::chrono_literals;
+
+    struct Test
+    {
+        std::string serverString, clientString, handshake;
+        std::atomic<bool> clientConnected { false };
+        std::atomic<int> messagecount { 0 };
+    };
+
+    Test testStatus;
+
+    {
+        struct TestClientInstance  : public choc::network::HTTPServer::ClientInstance
+        {
+            TestClientInstance (Test& t) : test (t)
+            {
+                test.clientConnected = true;
+            }
+
+            void handleWebSocketMessage (std::string_view m) override
+            {
+                test.serverString += m;
+                sendWebSocketMessage (std::string (m));
+            }
+
+            void upgradedToWebSocket (std::string_view path) override
+            {
+                test.handshake = path;
+            }
+
+            choc::network::HTTPContent getHTTPContent (std::string_view) override  { return {}; }
+            Test& test;
+        };
+
+        choc::network::HTTPServer server;
+
+        if (server.open ("127.0.0.1", 8080, 0,
+                         [&] { return std::make_unique<TestClientInstance> (testStatus); }, {}))
+        {
+            TestClient client (server.getHost(),
+                               server.getPort(),
+                               [&] (std::string_view m)
+                               {
+                                   testStatus.clientString += m;
+                                   ++testStatus.messagecount;
+                               });
+
+            {
+                auto start = std::chrono::system_clock::now();
+
+                while (! testStatus.clientConnected)
+                {
+                    if ((std::chrono::system_clock::now() - start) >= 30s)
+                        break;
+
+                    std::this_thread::sleep_for (1ms);
+                }
+
+                client.send ("Hello ");
+                client.send ("world!");
+            }
+
+            {
+                auto start = std::chrono::system_clock::now();
+
+                while (testStatus.messagecount < 2)
+                {
+                    if ((std::chrono::system_clock::now() - start) >= 30s)
+                        break;
+
+                    std::this_thread::sleep_for (1ms);
+                }
+            }
+        }
+    }
+
+    {
+        CHOC_CATEGORY (HTTPServer)
+        CHOC_TEST (Websocket)
+        CHOC_EXPECT_TRUE (testStatus.clientConnected)
+        CHOC_EXPECT_EQ (testStatus.clientString, "Hello world!")
+        CHOC_EXPECT_EQ (testStatus.serverString, "Hello world!")
+        CHOC_EXPECT_EQ (testStatus.handshake, "/test123")
+    }
+   #endif
+}
 
 //==============================================================================
-inline bool runAllTests (choc::test::TestProgress& progress)
+inline bool runAllTests (choc::test::TestProgress& progress, bool multithread)
 {
     choc::threading::TaskThread emergencyKillThread;
     int secondsElapsed = 0;
@@ -3089,33 +3345,76 @@ inline bool runAllTests (choc::test::TestProgress& progress)
          return true;
     });
 
-    try
-    {
-        choc::messageloop::initialise();
+    choc::messageloop::initialise();
 
-        testZLIB (progress);
-        testZipFile (progress);
-        testFileWatcher (progress);
-        testPlatform (progress);
-        testContainerUtils (progress);
-        testStringUtilities (progress);
-        testFileUtilities (progress);
-        testValues (progress);
-        testJSON (progress);
-        testMIDI (progress);
-        testAudioBuffers (progress);
-        testIntToFloat (progress);
-        testFIFOs (progress);
-        testMIDIFiles (progress);
-        testJavascript (progress);
-        testWebview (progress);
-        testCOM (progress);
-        testStableSort (progress);
-        testAudioFileFormat (progress);
-        testThreading (progress);
-        testTimers (progress);
-    }
-    CHOC_CATCH_UNEXPECTED_EXCEPTION
+    std::function<void(choc::test::TestProgress&)> testFunctions[] =
+    {
+        testHTTPServer,
+        testZLIB,
+        testZipFile,
+        testFileWatcher,
+        testPlatform,
+        testContainerUtils,
+        testStringUtilities,
+        testFileUtilities,
+        testValues,
+        testJSON,
+        testMIDI,
+        testAudioBuffers,
+        testIntToFloat,
+        testFIFOs,
+        testMIDIFiles,
+        testJavascript,
+        testWebview,
+        testCOM,
+        testStableSort,
+        testAudioFileFormat,
+        testThreading,
+        testTimers
+    };
+
+    auto t = std::thread ([&]
+    {
+        if (multithread)
+        {
+            std::vector<std::future<void>> futures;
+            std::mutex progressLock;
+
+            for (auto& fn : testFunctions)
+            {
+                futures.emplace_back (std::async (std::launch::async, [fn, &progress, &progressLock]
+                {
+                    std::ostringstream testOutput;
+                    choc::test::TestProgress p;
+                    p.printMessage = [&] (std::string_view m) { testOutput << m << "\n"; };
+                    fn (p);
+
+                    std::scoped_lock lock (progressLock);
+
+                    progress.print (choc::text::trimEnd (testOutput.str()));
+                    progress.numPasses += p.numPasses;
+                    progress.numFails += p.numFails;
+
+                    for (auto& failed : p.failedTests)
+                        progress.failedTests.push_back (failed);
+                }));
+            }
+
+            for (auto& f : futures)
+                f.wait();
+        }
+        else
+        {
+            for (auto& fn : testFunctions)
+                fn (progress);
+
+        }
+
+        choc::messageloop::stop();
+    });
+
+    choc::messageloop::run();
+    t.join();
 
     progress.printReport();
     return progress.numFails == 0;
