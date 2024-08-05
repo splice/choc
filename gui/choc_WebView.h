@@ -122,8 +122,8 @@ public:
         /// need to.
         bool enableDefaultClipboardKeyShortcutsInSafari = true;
 
-        /// On Windows, this will also enable browser implementations of accelerator
-        /// keys (e.g. Ctrl+F for find-in-page)
+        /// On Windows, this will enable browser implementations of accelerator keys
+        /// (e.g. Ctrl+F for find-in-page)
         bool enableWindowsAcceleratorKeys = true;
     };
 
