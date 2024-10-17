@@ -125,6 +125,10 @@ public:
         /// Option to enable or disable the ability to scroll with the space key
         bool enableSpaceToScroll = true;
 
+        /// Option to enable or disable the ability to use backspace to navigate to the
+        /// previous page
+        bool enableBackspaceToNavigate = true;
+
         /// On Windows, this will enable browser implementations of accelerator keys
         /// (e.g. Ctrl+F for find-in-page)
         bool enableWindowsAcceleratorKeys = true;
@@ -785,6 +789,9 @@ private:
         {
             auto path = objc::getString (objc::call<id> (e, "charactersIgnoringModifiers"));
             if (path == " ") return !options->enableSpaceToScroll;
+
+            const auto keyCode = objc::call<unsigned short> (e, "keyCode");
+            if (keyCode == 51) return !options->enableBackspaceToNavigate;
         }
 
         return false;
