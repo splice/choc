@@ -1,0 +1,22 @@
+name: PR Cycle Time
+
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to emit cycle-time metric for (workflow_dispatch only).'
+        required: true
+        type: string
+
+jobs:
+  emit:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    uses: splice/pr-risk-classifier/.github/workflows/cycle-time.yml@v1
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      pr_number: ${{ inputs.pr_number }}
+    secrets: inherit
