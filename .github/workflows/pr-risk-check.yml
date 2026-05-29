@@ -1,0 +1,23 @@
+name: PR Risk Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to classify (workflow_dispatch only).'
+        required: true
+        type: string
+
+jobs:
+  classify:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.user.login == 'splicebot'
+    uses: splice/pr-risk-classifier/.github/workflows/classify.yml@v1
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+    with:
+      pr_number: ${{ inputs.pr_number }}
+    secrets: inherit
